@@ -5,6 +5,8 @@
 #include <iostream>
 #include <chrono>
 
+#include <hwloc.h>
+
 #include <folly/MPMCQueue.h>
 #include <folly/futures/Future.h>
 #include <folly/futures/Future-inl.h>
@@ -29,8 +31,19 @@ void consume(folly::MPMCQueue<crdb_pmem::PmemEvent>& queue)
     }
 }
 
-void produce(folly::MPMCQueue<crdb_pmem::PmemEvent>& queue, int offset)
+void setAffinity(int cpuIndex) {
+    cpu_set_t cs;
+    CPU_ZERO(&cs);
+    CPU_SET(cpuIndex, &cs);
+    auto r = pthread_setaffinity_np(pthread_self(), sizeof(cs), &cs);
+    if (r != 0) {
+        std::cout << "failed to assign thread affinity for cpuIndex " << cpuIndex << ", ret code = " << r << std::endl;
+    }
+}
+
+void produce(folly::MPMCQueue<crdb_pmem::PmemEvent>& queue, int offset, int cpuIndex)
 {
+    setAffinity(cpuIndex);
     for (size_t i = 0; i < 1000; ++i)
     {
         auto a = i % 2 == 0 ? crdb_pmem::Action::WRITE : crdb_pmem::Action::READ;
@@ -65,15 +78,24 @@ void produce(folly::MPMCQueue<crdb_pmem::PmemEvent>& queue, int offset)
     }
 }
 
+int cpuCount() {
+    hwloc_topology_t topology;
+    hwloc_topology_init(&topology);
+    hwloc_topology_load(topology);
+    int cpuCount = hwloc_get_nbobjs_by_type(topology, HWLOC_OBJ_PU);
+    hwloc_topology_destroy(topology);
+    return cpuCount;
+}
+
 int main()
 {
     folly::MPMCQueue<crdb_pmem::PmemEvent>folly_queue (128);
     std::thread consumer_thread(consume, std::ref(folly_queue));
 
     std::vector<std::thread*> producers;
-    int producer_count = 128;
+    int producer_count = cpuCount();
     for (size_t i = 0; i < producer_count; ++i) {
-        std::thread* producer = new std::thread(produce, std::ref(folly_queue), i * 10000);
+        std::thread* producer = new std::thread(produce, std::ref(folly_queue), i * 10000, i);
         producers.push_back(producer);
     }
     std::for_each(producers.begin(), producers.end(), [](std::thread* t) { t->join();  });

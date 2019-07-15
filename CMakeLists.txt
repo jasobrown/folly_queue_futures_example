@@ -41,6 +41,7 @@ target_link_libraries(jeb-threading
   boost_thread
   boost_system
   event
+  hwloc
 )
 
 # linking the .a is trying to pull in a static library
